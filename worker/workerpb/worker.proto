@@ -1,0 +1,239 @@
+syntax = "proto3";
+
+package teleworker.worker;
+option go_package = "github.com/cretz/teleworker/worker/workerpb";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+// Job that can be submitted and stopped by the worker.
+message Job {
+  // Unique identifier for the job. When submitting a job, this can be provided
+  // or it will be generated if not provided.
+  string id = 1;
+
+  // Command to execute with the first value being the executable and the rest
+  // of the values being arguments.
+  repeated string command = 2;
+
+  // When the job was submitted.
+  google.protobuf.Timestamp submitted_at = 3;
+
+  // ID of the process on the local system.
+  int64 pid = 4;
+
+  // Current stdout contents of the job.
+  bytes stdout = 5;
+
+  // Current stderr contents of the job.
+  // TODO(cretz): Should we combine stdout and stderr into a repeated set of
+  // data chunks containing output type so we can somewhat preserve order?
+  bytes stderr = 6;
+
+  // If set, the process has completed and this is the exit code of the process.
+  // If this is -1, the process did not provide an exit code. If this is unset,
+  // the process is still running.
+  google.protobuf.Int32Value exit_code = 7;
+}
+
+// Service for managing jobs.
+service JobService {
+
+  // Get a job by its ID. This will error with NotFound if the job is not found.
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+  // TODO(cretz): We want grpc gateway bindings here?
+  // option (google.api.http) = {
+  //   get: "/teleworker/v1/jobs/{id}"
+  // };
+
+  // Submit a job. This will error with AlreadyExists if an ID is provided that
+  // already exists.
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+
+  // Stop a job by its ID. This will error with NotFound if the job is not
+  // found. This will error with FailedPrecondition if the job is not running.
+  // This will error with DeadlineExceeded if the attempted stop does not result
+  // in a completed process within a short time.
+  rpc StopJob(StopJobRequest) returns (StopJobResponse);
+
+  // Stream output of a job by its ID.
+  rpc StreamJobOutput(StreamJobOutputRequest) returns (stream StreamJobOutputResponse);
+}
+
+message GetJobRequest {
+  // Required ID for the job to get.
+  string job_id = 1;
+}
+
+message GetJobResponse {
+  Job job = 1;
+}
+
+message SubmitJobRequest {
+  // Job to submit. This must have at least one command. If the ID is not
+  // present, one is generated. No other values may be present.
+  Job job = 1;
+}
+
+message SubmitJobResponse {
+  // The submitted job.
+  Job job = 1;
+}
+
+message StopJobRequest {
+  // Required ID for the job to stop.
+  string job_id = 1;
+
+  // If true, issues a SIGKILL. If false, issues a SIGTERM.
+  bool force = 2;
+}
+
+message StopJobResponse {
+  // The completed job. The exit code field is guaranteed to be present.
+  Job job = 1;
+}
+
+message StreamJobOutputRequest {
+  // Required ID for the job to stream output for.
+  string job_id = 1;
+
+  // Limit the output to only the given stream type. By default both stdout and
+  // stderr are present.
+  oneof stream_limit {
+    bool only_stdout = 2;
+    bool only_stderr = 3;
+  }
+
+  // If true, provides output from the beginning of the job before streaming any
+  // new output. If false, only streams new output.
+  bool from_beginning = 4;
+}
+
+message StreamJobOutputResponse {
+  oneof response {
+    // A chunk of stdout data. There are no bounds to the size of this chunk.
+    // When replaying past data, stdout comes before stderr.
+    bytes stdout = 1;
+
+    // A chunk of stderr data. There are no bounds to the size of this chunk.
+    // When replaying past data, stdout comes before stderr.
+    bytes stderr = 2;
+
+    // When the job has completed and all output has been sent, this is sent
+    // as the last message before the stream is closed. This is always sent as
+    // the last message for a completed job, even if output stream is requested
+    // on an already-completed job.
+    // TODO(cretz): While we know that send-then-close is lossy if the client
+    // closes the stream, without a client close, is a send-then-close
+    // acceptable from a server perspective? I may rework this to just close the
+    // stream server side and add proto details to the gRPC status that relay
+    // the exit code. Or maybe I'll just keep it simple and expect the caller to
+    // obtain the exit code via a normal get.
+    int32 completed_exit_code = 3;
+  }
+
+  // If true, the stdout or stderr represent already-stored output. If false,
+  // the stdout or stderr represent new output.
+  bool past = 4;
+}
+
+// Configuration for a server.
+message ServerConfig {
+  // gRPC server settings.
+  GrpcServerConfig grpc_server = 1;
+
+  // Resource limits per job.
+  JobLimitConfig job_limits = 2;
+}
+
+message GrpcServerConfig {
+  // Address to listen on. This defaults to 127.0.0.1:8080.
+  string listen_address = 1;
+
+  // Certificate for server traffic. If not present, the server is not
+  // presented over TLS. This must be present if client auth is present.
+  KeyPair server_cert = 2;
+
+  // Authentication settings for clients. If not present, there is no client
+  // authentication.
+  ClientTlsAuth client_tls_auth = 3;
+
+  // Key pair. All values are required.
+  message KeyPair {
+    // File with the PEM-encoded certificate.
+    string cert_file = 1;
+
+    // File with the PEM-encoded private key.
+    string key_file = 2;
+  }
+
+  message ClientTlsAuth {
+    // Required PEM-encoded certificate file for the CA to validate client
+    // keys against.
+    string ca_cert_file = 1;
+
+    // Which certificates can read (i.e. get jobs and stream output). If
+    // unset, no clients can read except those that match can-write.
+    CertMatcher can_read = 2;
+
+    // Which certificates can write (i.e. submit and stop jobs). All writers
+    // can also read. If unset, no clients can write.
+    CertMatcher can_write = 3;
+
+    // Matcher for a cert. Considered a match if any of the fields match the
+    // certificate values.
+    message CertMatcher {
+      // Matches a certificate with an organizational unit in this list.
+      repeated string include_ous = 1;
+
+      // Matches a certificate with a common name in this list.
+      repeated string include_cns = 2;
+
+      // If true, all certificates match.
+      bool all = 3;
+    }
+  }
+}
+
+message JobLimitConfig {
+  // CPU limit settings or unset for no CPU limit.
+  Cpu cpu = 1;
+
+  // Amount of memory in bytes to limit each job to. If 0/unset, there is no
+  // memory limit.
+  uint64 max_memory = 2;
+
+  // IO limit settings per device or empty for no IO limits. Cannot have
+  // duplicate device major/minor.
+  repeated IoDevice io_devices = 3;
+
+  // If set and true, the network of the job will be isolated.
+  // TODO(cretz): Do we want to do anything more than just isolating?
+  bool isolated_network = 4;
+
+  // If set and true, the network of the job will be isolated.
+  // TODO(cretz): Do we want to do anything more than just isolating?
+  bool isolated_mount = 5;
+
+  // CPU limits. All values must be above zero.
+  message Cpu {
+    // Amount of CPU microseconds to divy up.
+    uint64 period_micros = 1;
+
+    // Amount of CPU microseconds allowed over the period.
+    uint64 quota_micros = 2;
+  }
+
+  message IoDevice {
+    // Amount of bytes per second allowed on this device. Must be above zero.
+    uint64 bytes_per_second = 1;
+
+    // Device major version. If unset, uses the major version of the device
+    // where the worker's executable resides.
+    google.protobuf.UInt32Value major_version = 2;
+
+    // Device minor version. If unset, uses the minor version of the device
+    // where the worker's executable resides.
+    google.protobuf.UInt32Value minor_version = 3;
+  }
+}
