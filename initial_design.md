@@ -7,64 +7,140 @@ only valid at the time of this writing.
 
 ## Library
 
-Teleworker will have a library in `worker/`. It will have the following features:
+Teleworker will have a library in `worker/`. The components are listed below.
 
-* A `Manager` that accepts config with `JobLimits` (see [worker.proto](worker/workerpb/worker.proto)) with the following
-  features:
-  * Operations (all context-bounded):
-    * Get job - get a job by its ID, clone its proto atomically, and return
-    * Submit job - submit a proto job, setting UUID v4 ID if not set by caller, confirms it doesn't already exist by ID,
-      and submits to job runner
-    * Stop job - stop a job by its ID (using SIGKILL if force bool is true) and block until stopped or context done
-    * Stop jobs - stop all running jobs (used by CLI) and block until stopped or context done
-    * Stream job output - provide a callback to send byte arrays (callback easy to use with gRPC stream send but may
-      switch to accepting send-only channel depending on implementation), returns with exit code if job completes
-      * Based on requirements discussion, there is no limit to byte chunk size
-  * Based on requirements discussion, there is no limit to the number of jobs stored, completed or otherwise
-  * See the [worker.proto](worker/workerpb/worker.proto) service for more details on inputs and outputs
-* A `job` which embeds the protobuf `Job` and internally atomically updates itself based on updates
-  * Based on requirements discussion, there is no limit to the number of output bytes stored
-  * May have `chan struct{}` done channel for others to listen to (will determine during implementation)
-  * If we want to properly order stdout and stderr, may have combined output chunks with each chunk containing output
-    type instead of byte slice per output type (will determine during implementation, will cause proto to change)
-* A `jobRunner` interface for submitting jobs that is backed by a Linux-specific impl
-  * Accepts jobs to run and maintains state on the job atomically
-* A `ServeGRPC` that accepts a context, manager, gRPC server config (see [worker.proto](worker/workerpb/worker.proto)),
-  and  `grpc.ServerOption`s and then blocks until context complete or error
-  * Service implementation authenticates client certificates if configured to do so
-  * Each call authorizes current client certificate if configured to do so
-  * Once authed, calls delegate to the manager
-* A `DialGRPC` call that accepts a context and a configuration struct (with address, CA cert to validate server cert,
-  and client cert/key for auth) and then returns an interface that combines the service client a `Close` for closing the
-  connection.
+### Job Manager
 
-A couple of manager/job-level tests will be written to confirm phase 1 is working (see "Implementation Phases" section).
-The primary tests, intentionally limited to only a couple, will be end-to-end via gRPC as part of phase 2.
+The manager component maintains a set of jobs and has operations to read and submit them. A manager is created with
+configuration consisting of an optional `JobLimitsConfig` (see proto) which it simply constructs a job runner with.
+
+All operations accept a context even if the context is unused (e.g. a memory-only get). The operations are listed below.
+
+**get job**
+
+Obtain a job by its ID, then atomically clone and return the protobuf representation of the job.
+
+**stop job**
+
+Stop a job by its ID if not already stopped. Accepts a `force` boolean that will send a `SIGKILL` when true or a
+`SIGTERM` when false. This call blocks until the job is stopped or the context is closed. Upon successful stop, the job
+is returned akin to how the get job operation does.
+
+**stop jobs**
+
+Same as the stop job operation, but for all jobs. This is used by the CLI for graceful termination. This blocks until
+all jobs have stopped or the context is closed.
+
+**stream job output**
+
+Accept a callback (or channel, depends on implementation decisions) to send. Also has a bool `past` parameter that, if
+true, will immediately send all past output before sending streaming output. This will block and continue to send output
+until the job completes or the context is closed.
+
+### Job
+
+The unexported job contains the protobuf job state as well as any mutexes for locking field access.
+
+### Job Runner
+
+Job runner is an unexported interface for submitting a job. It is abstracted for platform independence. There are two
+implementations: a `os/exec`-based platform-independent runner that does not accept job limits, and a linux-only runner
+that does accept job limits.
+
+### gRPC Server
+
+A `ServeGRPC` operation will exist that accepts a context, a job manager, a `GrpcServerConfig` (see proto), and an
+optional variable number of additional `grpc.ServerOption`s. This call is blocking and the implementation of the gRPC
+service will, after security checks, delegate to the manager and convert output and errors to gRPC accordingly.
+
+#### Security
+
+The gRPC server can optionally be protected by TLS and by client mTLS. These are set via `grpc/credentials`-based TLS
+configuration. The `GrpcServerConfig` (see proto) contains the server key pair to serve TLS with. The configuration also
+contains a CA to verify against client certificates. Finally, the configuration contains a set of "client cert matchers"
+for read and write capabilities. A client certificate must satisfy the matcher for a capability to be granted. Clients
+with write capabilities are automatically granted read capabilities. See proto for details.
+
+### gRPC Client
+
+A `DialGRPC` operation will exist that accepts a context and a configuration struct with options for the address, CA
+certificate to validate the server certificate with, and a key pair to send as the client certificate. This will use the
+`grpc/credentials`-based TLS configuration.
+
+### Testing
+
+For the phase 1 (see "Implementation Phases" section), minimal tests will be done to ensure the library works as
+documented. Once the gRPC server is implemented in phase 2, a few more end-to-end tests will confirm functionality. The
+number of tests is intentionally limited by request.
 
 ## CLI
 
-The primary build of the repo is a cobra-based CLI, implemented in `cmd/` and called from `main.go`, with the following
-commands:
+The primary build of the repo is a cobra-based CLI, implemented in `cmd/` and called from `main.go`. The commands are
+listed below.
 
-* `child-exec` - Special command that, from research, may be needed to set network and mount namespace isolation.
-  Basically just limits the Go runtime to single-threaded and then execs the given command with isolation calls. This
-  should never be invoked by a user directly (likely caught by `init` function instead of a cobra command, though will
-  still have a cobra command for usage documentation reasons).
-* `gen-key FILE_SANS_EXT` - Simple ECDSA P-256 key generator. Accepts `--signer-cert` and `--signer-key` files to sign
-  with, or is self-signed. Accepts `--is-ca` if expected to be used as CA and signer. Accepts `--ou` for the
-  organizational unit and accepts `--cn` for the common name. Writes to `<FILE_SANS_EXT>.crt` and `<FILE_SANS_EXT>.key`.
-* `get JOB_ID` - Accepts client CLI args (address, server CA, client cert/key) and dumps the job info sans output. If
-  `--stderr` and/or `--stdout` are present, they are dumped as well.
-* `serve` - Accepts a `--config` (`-c`) that is a YAML file parsed into `ServerConfig` from
-  [worker.proto](worker/workerpb/worker.proto). This starts a manager and starts the gRPC server and waits for SIGTERM
-  or SIGINT. Upon signal, attempts to stop all jobs in the manager and waits until all stopped
-* `stop JOB_ID` - Accepts same client CLI args as `get` and performs a job stop on the gRPC service
-* `submit COMMAND...` - Accepts same client CLI args as `get` and submits the command, dumps the job info, and exits
-* `tail JOB_ID` - Accepts same client CLI args as `get` and prints job output. Accepts `-f/--follow` to continually
-  receive live output. Accepts `--no-past` to not show past output, only new output (only valid in combination with
-  `-f`). By default only dumps stdout. Accepts `--stderr` to only dump stderr or `--stdout-and-stderr` (intentionally
-  wordy) to dump combined output in non-deterministic order. If `-f` is set, completes when job completes and always has
-  success exit code regardless of what job exit code is.
+**child-exec**
+
+    child-exec NAMESPACE_ARGS COMMAND...
+
+This is a special command that, from research, may be needed to set network and mount namespace isolation. Basically
+this command just limits the Go runtime to single-threaded and then execs the given command with isolation calls. This
+should never be invoked by a user directly only internally. The command is likely caught by `init` function instead of a
+cobra command, though a cobra command may be present for usage documentation reasons.
+
+**gen-key**
+
+    gen-key [--signer-cert FILE] [--signer-key FILE] [--is-ca] [--ou OU] [--cn CN] FILENAME_SANS_EXT
+
+This command simply generates an ECDSA P-256 key. If `--signer-cert` and `--signer-key` are present, the certificate is
+signed with it, otherwise it is self-signed. If `--is-ca` is present, it can be used as a signer key for other
+certificates. If `--ou` is present, the organizational unit is set to the value. If `--cn` is present, the common name
+is set to the value.
+
+**get**
+
+    get [COMMON_CLIENT_COMMANDS] [--stdout] [--stderr] JOB_ID
+
+This command prints the current job information for the given job ID from the server. If `--stdout` is present, the
+stdout is also printed. If `--stderr` is present, the stderr is also printed.
+
+`COMMON_CLIENT_COMMANDS` are a set of commands used for communicating with the gRPC server. These are `--address ADDR`,
+`--server-ca-cert FILE`, `--client-cert FILE`, and `--client-key FILE`. `--address` is the IP/host + port to contact the
+gRPC server on. `--server-ca-cert` is the file to verify the server certificate against. `--client-cert` and
+`--client-key` is the key pair to send as the client certificate for auth.
+
+**serve**
+
+    serve -c/--config CONFIG_FILE
+
+This command starts the job manager and gRPC server using the given config file. The config file is a YAML file that
+serializes into `ServerConfig` (see proto). This runs until there is some error or a SIGTERM/SIGINT is received. When
+one of those two signals is received, a graceful shutdown of the job manager will be attempted with a short timeout.
+
+**stop**
+
+    stop [COMMON_CLIENT_COMMANDS] [--force] JOB_ID
+
+This command stops a job on the server. The `COMMON_CLIENT_COMMANDS` are the same as in the `get` command. If `--force`
+is present, `SIGKILL` is used instead of `SIGTERM`. If the job stops successfully, regardless of status code, this
+returns successfully with a printed job like the `get` command.
+
+**submit**
+
+    submit [COMMON_CLIENT_COMMANDS] [--id ID] COMMAND...
+
+This command submits a job to the server. The `COMMON_CLIENT_COMMANDS` are the same as in the `get` command. The `--id`
+can optionally be provided to set an ID. The result of this command is a printed job like the `get` command.
+
+**tail**
+
+    tail [COMMON_CLIENT_COMMANDS] [-f/--follow] [--no-past] [--stderr] [--stdout-and-stderr] JOB_ID
+
+This command, by default, prints the existing stdout for the job on the server. The `COMMON_CLIENT_COMMANDS` are the
+same as in the `get` command. If `-f/--follow` is present, the command will give all past output then continually stream
+new output. If `--no-past` is present (only allowed when `-f/--follow` is present), the continually streamed output will
+not begin with all past output. If `--stderr` is present, the output is stderr instead of stdout. If
+`--stdout-and-stderr` is present, the output is stderr and stdout (intentionally a wordy flag name as output is in
+non-deterministic order).
 
 ## Implementation Phases
 
