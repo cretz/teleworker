@@ -1,77 +1,150 @@
 # Teleworker - Initial Design
 
-This document contains the initial design of Teleworker. It is intentionally brief and limited by trade-offs listed at
-the end. Much of this complements the [worker.proto](worker/workerpb/worker.proto) file. While the document does have
-implementation details at varying levels of depth, it is acknowledged that they may change during development and are
-only valid at the time of this writing.
+This document contains the initial design of Teleworker. It is intentionally brief and limited by trade-offs listed near
+the end. While the document does have implementation details at varying levels of depth, it is acknowledged that they
+may change during development and are only valid at the time of this writing.
 
 ## Library
 
 Teleworker will have a library in `worker/`. The components are listed below.
 
-### Job Manager
-
-The manager component maintains a set of jobs and has operations to read and submit them. A manager is created with
-configuration consisting of an optional `JobLimitsConfig` (see proto) which it simply constructs a job runner with.
-
-All operations accept a context even if the context is unused (e.g. a memory-only get). The operations are listed below.
-
-**get job**
-
-Obtain a job by its ID, then atomically clone and return the protobuf representation of the job.
-
-**stop job**
-
-Stop a job by its ID if not already stopped. Accepts a `force` boolean that will send a `SIGKILL` when true or a
-`SIGTERM` when false. This call blocks until the job is stopped or the context is closed. Upon successful stop, the job
-is returned akin to how the get job operation does.
-
-**stop jobs**
-
-Same as the stop job operation, but for all jobs. This is used by the CLI for graceful termination. This blocks until
-all jobs have stopped or the context is closed.
-
-**stream job output**
-
-Accept a callback (or channel, depends on implementation decisions) to send. Also has a bool `past` parameter that, if
-true, will immediately send all past output before sending streaming output. This will block and continue to send output
-until the job completes or the context is closed.
-
 ### Job
 
-The unexported job contains the protobuf job state as well as any mutexes for locking field access.
+The job contains the state as well as any mutexes for locking field access. The state has the following information:
+
+* namespace - The namespace for this job for grouping purposes.
+* id - The job ID which can be user defined or is a generated v4 UUID if not user defined. This must be unique per
+  namespace.
+* command - String slice of the original command.
+* pid - Integer PID of the command.
+* exit code - Unexported integer of the exit code (and accompanying boolean saying whether the job has even completed)
+* stdout, stderr - Unexported byte slices for content
+
+In addition to the exported, immutable namespace, id, command, and pid fields, the following operations are present:
+
+* get exit code - Atomically get the exit code and true if completed, or false of not completed.
+* get output - Copy output into byte slice parameter, optionally from an offset. Returns amount copied and total current
+  amount of output.
+* listen output - Accept a send-only channel that is continually notified on any output update until context is closed.
+  Note, this is just notifying on update with the new total current amount of output, caller must call get output to 
+  retrieve it. This simple approach is chosen based on simplistic requirements compared to a more robust output
+  broadcasting method. Blocks until context closed or job complete (return value will clarify which).
+* stop - Stop the job if not already stopped. Blocks until context is closed or the job is stopped.
+
+#### Output Management
+
+Based on feedback to ignore memory concerns, the output will be stored as simple stdout and stderr byte slices instead
+of a traditional rotating set of buffers. The output for each output type is captured via a pipe and appended to its
+respective slice under write lock.
+
+Based on feedback to store the entire output for all time, those wanting to stream output will simply hold cursor
+indexes into the byte slices instead of a traditional multi-writer or broadcast-based approach.
 
 ### Job Runner
 
 Job runner is an unexported interface for submitting a job. It is abstracted for platform independence. There are two
-implementations: a `os/exec`-based platform-independent runner that does not accept job limits, and a linux-only runner
-that does accept job limits.
+implementations: a `os/exec`-based platform-independent runner that does not accept job limits/isolation configuration,
+and a linux-only runner that does accept those.
 
-### gRPC Server
+#### Resource Limiting
 
-A `ServeGRPC` operation will exist that accepts a context, a job manager, a `GrpcServerConfig` (see proto), and an
-optional variable number of additional `grpc.ServerOption`s. This call is blocking and the implementation of the gRPC
-service will, after security checks, delegate to the manager and convert output and errors to gRPC accordingly.
+Per job resource limits can be provided to the Linux job runner. A default configuration will be available that
+implements all limits with reasonable values. The types of limits are listed below.
 
-#### Security
+**CPU**
 
-The gRPC server can optionally be protected by TLS and by client mTLS. These are set via `grpc/credentials`-based TLS
-configuration. The `GrpcServerConfig` (see proto) contains the server key pair to serve TLS with. The configuration also
-contains a CA to verify against client certificates. Finally, the configuration contains a set of "client cert matchers"
-for read and write capabilities. A client certificate must satisfy the matcher for a capability to be granted. Clients
-with write capabilities are automatically granted read capabilities. See proto for details.
+This is controlled via per-job cgroup. The following parameters are accepted:
 
-### gRPC Client
+* period microseconds - Amount of CPU to divy up
+* quota microseconds - Amount of CPU allowed over the period
 
-A `DialGRPC` operation will exist that accepts a context and a configuration struct with options for the address, CA
-certificate to validate the server certificate with, and a key pair to send as the client certificate. This will use the
-`grpc/credentials`-based TLS configuration.
+**memory**
+
+This is controlled via per-job cgroup. The following parameters are accepted:
+
+* max bytes - Maximum amount of bytes to allow job to use
+
+**IO device**
+
+This is controlled via per-job cgroup. There can be multiple device limits. The following parameters are accepted for
+each device limit:
+
+* bytes per second - Amount of bytes per second allowed on the device
+* major version - Major version of the device
+* minor version - Minor version of the device
+
+#### Namespace Isolation
+
+Per job namespace isolation can be configured for the Linux job runner. A default configuration will be available that
+uses all isolations with reasonable values. The types of isolations are listed below.
+
+In order to support isolation, we re-execute ourselves (see the `child-exec` CLI command) but setup the new root path.
+In the future advanced network isolation settings could be set for the child as well. To keep code simple and prepare
+for a future where the child may have to wait for network setup, if any isolation is enabled the self-re-execution is
+performed even if not changing the root mount.
+
+**PID**
+
+This is controlled via the `CLONE_NEWPID` syscall attribute to the command. This is enabled via a boolean.
+
+**network**
+
+This is controlled via `CLONE_NEWNET` syscall attribute to the command. This is currently enabled via a boolean. When
+enabled, the default of no network interfaces are made available. In the future, loopback or other interfaces could be
+configured.
+
+**mount**
+
+This is controlled via `CLONE_NEWNS` syscall attribute to the command. This accepts a single argument for the new root
+filesystem path which is applied via the mount and pivot root syscalls.
+
+### Job Manager
+
+The manager component maintains a set of jobs and has operations to get and submit them. A manager is created with
+configuration consisting of an optional job limit configuration which it simply constructs a job runner with. Jobs
+are grouped by namespace.
+
+**get job**
+
+Obtain a job by its namespace and ID.
+
+**submit job**
+
+Submit a job. The job namespace is optional (default is empty string namespace), ID is optional (default is generated),
+and command is required. No other job fields may be set. Result is a started job with a PID.
 
 ### Testing
 
-For the phase 1 (see "Implementation Phases" section), minimal tests will be done to ensure the library works as
-documented. Once the gRPC server is implemented in phase 2, a few more end-to-end tests will confirm functionality. The
-number of tests is intentionally limited by request.
+Based on requirements, tests are minimal. Integration tests will be present as Go unit tests to ensure resource limits
+are applied, output is properly captured, and invalid command is properly relayed.
+
+## gRPC Service
+
+A GRPC service implementation will be present in `workergrpc/` that handles authentication and authorization on each RPC
+call. A job manager will be provided to the service, and after auth, all RPC calls will simply delegate to it,
+translating models in either direction. See the [workergrpc/worker.proto](workergrpc/worker.proto) file for details.
+
+### Authentication
+
+Authentication is done via mutual TLS.
+
+For servers, a "get server credentials" operation will be present that accepts a server key pair (for TLS) and a client
+CA certificate (to verify client certificates) that returns an instance of `grpc/credentials.TransportCredentials` for
+use as a server option by gRPC server creators.
+
+For clients, a "get client credentials" operation will be present that accepts a client key pair (for auth) and a server
+CA certificate (to verify server certificate) that returns an instance of `grpc/credentials.TransportCredentials` for
+use as a dial option by gRPC client creators.
+
+### Authorization
+
+Authorization simply isolates jobs by using the client certificate's OU as the job namespace. There are no traditional
+authorization checks (i.e. there is no such thing as authorization failure, an empty OU is the empty namespace).
+
+### Testing
+
+Based on requirements, tests are minimal. Integration tests will be present that confirm authentication works and
+different certificate OUs properly isolate clients.
 
 ## CLI
 
@@ -80,12 +153,14 @@ listed below.
 
 **child-exec**
 
-    child-exec NAMESPACE_ARGS COMMAND...
+    child-exec ROOT_FS COMMAND...
 
-This is a special command that, from research, may be needed to set network and mount namespace isolation. Basically
-this command just limits the Go runtime to single-threaded and then execs the given command with isolation calls. This
-should never be invoked by a user directly only internally. The command is likely caught by `init` function instead of a
-cobra command, though a cobra command may be present for usage documentation reasons.
+This is a special command to re-execute a child command but with the given root filesystem path set as the root (via
+pivot root) before executing the child. If `ROOT_FS` is empty, the root will not be changed. In the future this could
+support waiting for a network configured by the parent process.
+
+This command should never be executed by the user. It will likely be handled before the rest of the cobra command
+handling and will only have a cobra command entry for usage/documentation purposes.
 
 **gen-key**
 
@@ -98,45 +173,49 @@ is set to the value.
 
 **get**
 
-    get [COMMON_CLIENT_COMMANDS] [--stdout] [--stderr] JOB_ID
+    get [COMMON_CLIENT_FLAGS] [--stdout] [--stderr] JOB_ID
 
 This command prints the current job information for the given job ID from the server. If `--stdout` is present, the
 stdout is also printed. If `--stderr` is present, the stderr is also printed.
 
-`COMMON_CLIENT_COMMANDS` are a set of commands used for communicating with the gRPC server. These are `--address ADDR`,
+`COMMON_CLIENT_FLAGS` are a set of commands used for communicating with the gRPC server. These are `--address ADDR`,
 `--server-ca-cert FILE`, `--client-cert FILE`, and `--client-key FILE`. `--address` is the IP/host + port to contact the
 gRPC server on. `--server-ca-cert` is the file to verify the server certificate against. `--client-cert` and
 `--client-key` is the key pair to send as the client certificate for auth.
 
 **serve**
 
-    serve -c/--config CONFIG_FILE
+    serve [--address ADDR] --server-cert FILE --server-key FILE --client-ca-cert FILE
 
-This command starts the job manager and gRPC server using the given config file. The config file is a YAML file that
-serializes into `ServerConfig` (see proto). This runs until there is some error or a SIGTERM/SIGINT is received. When
-one of those two signals is received, a graceful shutdown of the job manager will be attempted with a short timeout.
+This command starts the job manager and gRPC server using the given config. The gRPC server will be bound to `--address`
+or defaulted to `127.0.0.1:8080`. This runs until there is some error or a `SIGTERM`/`SIGINT` is received. When one of
+those two signals is received, the gRPC server is stopped and a graceful shutdown of the job manager will be attempted
+with a short timeout.
+
+To maintain simplicity, this will use a default set of resource limits (see the "Resource Limiting" section) and a
+default namespace isolation configuration (see "Namespace Isolation" section).
 
 **stop**
 
-    stop [COMMON_CLIENT_COMMANDS] [--force] JOB_ID
+    stop [COMMON_CLIENT_FLAGS] [--force] JOB_ID
 
-This command stops a job on the server. The `COMMON_CLIENT_COMMANDS` are the same as in the `get` command. If `--force`
+This command stops a job on the server. The `COMMON_CLIENT_FLAGS` are the same as in the `get` command. If `--force`
 is present, `SIGKILL` is used instead of `SIGTERM`. If the job stops successfully, regardless of status code, this
 returns successfully with a printed job like the `get` command.
 
 **submit**
 
-    submit [COMMON_CLIENT_COMMANDS] [--id ID] COMMAND...
+    submit [COMMON_CLIENT_FLAGS] [--id ID] COMMAND...
 
-This command submits a job to the server. The `COMMON_CLIENT_COMMANDS` are the same as in the `get` command. The `--id`
-can optionally be provided to set an ID. The result of this command is a printed job like the `get` command.
+This command submits a job to the server. The `COMMON_CLIENT_FLAGS` are the same as in the `get` command. The `--id` can
+optionally be provided to set an ID. The result of this command is a printed job like the `get` command.
 
 **tail**
 
-    tail [COMMON_CLIENT_COMMANDS] [-f/--follow] [--no-past] [--stderr] [--stdout-and-stderr] JOB_ID
+    tail [COMMON_CLIENT_FLAGS] [-f/--follow] [--no-past] [--stderr] [--stdout-and-stderr] JOB_ID
 
-This command, by default, prints the existing stdout for the job on the server. The `COMMON_CLIENT_COMMANDS` are the
-same as in the `get` command. If `-f/--follow` is present, the command will give all past output then continually stream
+This command, by default, prints the existing stdout for the job on the server. The `COMMON_CLIENT_FLAGS` are the same
+as in the `get` command. If `-f/--follow` is present, the command will give all past output then continually stream
 new output. If `--no-past` is present (only allowed when `-f/--follow` is present), the continually streamed output will
 not begin with all past output. If `--stderr` is present, the output is stderr instead of stdout. If
 `--stdout-and-stderr` is present, the output is stderr and stdout (intentionally a wordy flag name as output is in
@@ -163,3 +242,28 @@ non-deterministic order).
   library environment, we'd make the service and client easier to use with existing gRPC connections.
 * There is no requirement for listing jobs.
 * By request, there will not be many tests.
+
+## Changelog
+
+This tracks the changes to this document as discussions were had.
+
+* Initially this document was a simple bulleted list of functionality with details left to the proto. By request, it was
+  expanded to a more prose style.
+* Initially the plan was to keep it simple with a single package for the library that was able to use the proto models
+  and have simple helpers to serve/dial gRPC. Based on feedback, the proto will not be used in the library package and
+  another package will be just for gRPC and translation code will be written to translate models in either direction.
+  Also due to the fact that the proto cannot be reused for the library models, I have put more details in this document
+  that explain for the library what the proto documentation explains for the gRPC side.
+* Initially the plan was to have a simple proto representing server config YAML. Based on feedback, the config will be
+  handwritten struct instead. Originally the code was gonna be a simple serializer from YAML into the proto model. Based
+  on feedback, this will now be collections of CLI flags.
+* Initially the plan was to have client authorization be based on OU or CN that would affect whether they could just
+  view jobs or submit them also (i.e. traditional role-based authorization). Based on feedback, the goal is actually to
+  isolate entire sets of jobs by the certificate presented (i.e. job set isolation). This is why the namespace concept
+  was implemented.
+* Initially the plan was to document at a high level that output would be captured leaving the Go implementation details
+  to the Go code. By request, detail about how this will be written in Go has been added to this document.
+* Initially the plan was to document at a high level which resource limits would apply and perform the syscall-level
+  research on how best to implement for the implementation itself where tests reside to confirm how best to implement.
+  By request, more information will be provided upfront about hopefully how best to implement these (while trying to
+  avoid writing upfront code to confirm assumptions).
