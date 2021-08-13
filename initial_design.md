@@ -95,8 +95,9 @@ configured.
 
 **mount**
 
-This is controlled via `CLONE_NEWNS` syscall attribute to the command. This accepts a single argument for the new root
-filesystem path which is applied via the mount and pivot root syscalls.
+This is controlled via `CLONE_NEWNS` syscall attribute to the command. This accepts a single argument for the base of
+all new root filesystem paths. The root path will then be created as a unique subdirectory of the configured base path.
+The child executable will apply the new root path via the mount and pivot root syscalls.
 
 ### Job Manager
 
@@ -156,8 +157,9 @@ listed below.
     child-exec ROOT_FS COMMAND...
 
 This is a special command to re-execute a child command but with the given root filesystem path set as the root (via
-pivot root) before executing the child. If `ROOT_FS` is empty, the root will not be changed. In the future this could
-support waiting for a network configured by the parent process.
+pivot root) before executing the child. If `ROOT_FS` is empty, the root will not be changed. Otherwise, `ROOT_FS` will
+point to an already-created path. In the future this could support waiting for a network configured by the parent
+process.
 
 This command should never be executed by the user. It will likely be handled before the rest of the cobra command
 handling and will only have a cobra command entry for usage/documentation purposes.

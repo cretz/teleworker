@@ -13,26 +13,34 @@ message Job {
   string id = 1;
 
   // Command to execute with the first value being the executable and the rest
-  // of the values being arguments.
+  // of the values being arguments. When submitting a job, this must have at
+  // least one value.
   repeated string command = 2;
 
-  // When the job was submitted.
+  // When the job was submitted. This value is read-only and cannot be present
+  // on job submission.
   google.protobuf.Timestamp submitted_at = 3;
 
-  // ID of the process on the local system.
+  // ID of the process on the local system. This value is read-only and cannot
+  // be present on job submission.
   int64 pid = 4;
 
-  // Current stdout contents of the job.
+  // Current stdout contents of the job. This value is read-only and cannot be
+  // present on job submission. When getting a job, this value may be absent if
+  // not explicitly requested.
   bytes stdout = 5;
 
-  // Current stderr contents of the job.
+  // Current stderr contents of the job.  This value is read-only and cannot be
+  // present on job submission. When getting a job, this value may be absent if
+  // not explicitly requested.
   // TODO(cretz): Should we combine stdout and stderr into a repeated set of
   // data chunks containing output type so we can somewhat preserve order?
   bytes stderr = 6;
 
   // If set, the process has completed and this is the exit code of the process.
   // If this is -1, the process did not provide an exit code. If this is unset,
-  // the process is still running.
+  // the process is still running.  This value is read-only and cannot be
+  // present on job submission.
   google.protobuf.Int32Value exit_code = 7;
 }
 

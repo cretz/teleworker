@@ -32,21 +32,29 @@ type Job struct {
 	// or it will be generated if not provided.
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Command to execute with the first value being the executable and the rest
-	// of the values being arguments.
+	// of the values being arguments. When submitting a job, this must have at
+	// least one value.
 	Command []string `protobuf:"bytes,2,rep,name=command,proto3" json:"command,omitempty"`
-	// When the job was submitted.
+	// When the job was submitted. This value is read-only and cannot be present
+	// on job submission.
 	SubmittedAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=submitted_at,json=submittedAt,proto3" json:"submitted_at,omitempty"`
-	// ID of the process on the local system.
+	// ID of the process on the local system. This value is read-only and cannot
+	// be present on job submission.
 	Pid int64 `protobuf:"varint,4,opt,name=pid,proto3" json:"pid,omitempty"`
-	// Current stdout contents of the job.
+	// Current stdout contents of the job. This value is read-only and cannot be
+	// present on job submission. When getting a job, this value may be absent if
+	// not explicitly requested.
 	Stdout []byte `protobuf:"bytes,5,opt,name=stdout,proto3" json:"stdout,omitempty"`
-	// Current stderr contents of the job.
+	// Current stderr contents of the job.  This value is read-only and cannot be
+	// present on job submission. When getting a job, this value may be absent if
+	// not explicitly requested.
 	// TODO(cretz): Should we combine stdout and stderr into a repeated set of
 	// data chunks containing output type so we can somewhat preserve order?
 	Stderr []byte `protobuf:"bytes,6,opt,name=stderr,proto3" json:"stderr,omitempty"`
 	// If set, the process has completed and this is the exit code of the process.
 	// If this is -1, the process did not provide an exit code. If this is unset,
-	// the process is still running.
+	// the process is still running.  This value is read-only and cannot be
+	// present on job submission.
 	ExitCode *wrapperspb.Int32Value `protobuf:"bytes,7,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
 }
 
