@@ -17,31 +17,34 @@ message Job {
   // least one value.
   repeated string command = 2;
 
+  // If non-empty, this will become to root of the filesystem.
+  string root_fs = 3;
+
   // When the job was submitted. This value is read-only and cannot be present
   // on job submission.
-  google.protobuf.Timestamp submitted_at = 3;
+  google.protobuf.Timestamp created_at = 4;
 
   // ID of the process on the local system. This value is read-only and cannot
   // be present on job submission.
-  int64 pid = 4;
+  int64 pid = 5;
 
   // Current stdout contents of the job. This value is read-only and cannot be
   // present on job submission. When getting a job, this value may be absent if
   // not explicitly requested.
-  bytes stdout = 5;
+  bytes stdout = 6;
 
   // Current stderr contents of the job.  This value is read-only and cannot be
   // present on job submission. When getting a job, this value may be absent if
   // not explicitly requested.
   // TODO(cretz): Should we combine stdout and stderr into a repeated set of
   // data chunks containing output type so we can somewhat preserve order?
-  bytes stderr = 6;
+  bytes stderr = 7;
 
   // If set, the process has completed and this is the exit code of the process.
   // If this is -1, the process did not provide an exit code. If this is unset,
-  // the process is still running.  This value is read-only and cannot be
-  // present on job submission.
-  google.protobuf.Int32Value exit_code = 7;
+  // the process is still running. This value is read-only and cannot be present
+  // on job submission.
+  google.protobuf.Int32Value exit_code = 8;
 }
 
 // Service for managing jobs.
@@ -67,6 +70,12 @@ service JobService {
 message GetJobRequest {
   // Required ID for the job to get.
   string job_id = 1;
+
+  // If true, stdout of the job will be present if any output exists.
+  bool include_stdout = 2;
+
+  // If true, stderr of the job will be present if any output exists.
+  bool include_stderr = 3;
 }
 
 message GetJobResponse {
