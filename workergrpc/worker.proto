@@ -1,0 +1,136 @@
+syntax = "proto3";
+
+package teleworker.worker;
+option go_package = "github.com/cretz/teleworker/workergrpc";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+// Job that can be submitted and stopped by the worker.
+message Job {
+  // Unique identifier for the job. When submitting a job, this can be provided
+  // or it will be generated if not provided.
+  string id = 1;
+
+  // Command to execute with the first value being the executable and the rest
+  // of the values being arguments. When submitting a job, this must have at
+  // least one value.
+  repeated string command = 2;
+
+  // When the job was submitted. This value is read-only and cannot be present
+  // on job submission.
+  google.protobuf.Timestamp submitted_at = 3;
+
+  // ID of the process on the local system. This value is read-only and cannot
+  // be present on job submission.
+  int64 pid = 4;
+
+  // Current stdout contents of the job. This value is read-only and cannot be
+  // present on job submission. When getting a job, this value may be absent if
+  // not explicitly requested.
+  bytes stdout = 5;
+
+  // Current stderr contents of the job.  This value is read-only and cannot be
+  // present on job submission. When getting a job, this value may be absent if
+  // not explicitly requested.
+  // TODO(cretz): Should we combine stdout and stderr into a repeated set of
+  // data chunks containing output type so we can somewhat preserve order?
+  bytes stderr = 6;
+
+  // If set, the process has completed and this is the exit code of the process.
+  // If this is -1, the process did not provide an exit code. If this is unset,
+  // the process is still running.  This value is read-only and cannot be
+  // present on job submission.
+  google.protobuf.Int32Value exit_code = 7;
+}
+
+// Service for managing jobs.
+service JobService {
+
+  // Get a job by its ID. This will error with NotFound if the job is not found.
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+
+  // Submit a job. This will error with AlreadyExists if an ID is provided that
+  // already exists.
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+
+  // Stop a job by its ID. This will error with NotFound if the job is not
+  // found. This will error with FailedPrecondition if the job is not running.
+  // This will error with DeadlineExceeded if the attempted stop does not result
+  // in a completed process within a short time.
+  rpc StopJob(StopJobRequest) returns (StopJobResponse);
+
+  // Stream output of a job by its ID.
+  rpc StreamJobOutput(StreamJobOutputRequest) returns (stream StreamJobOutputResponse);
+}
+
+message GetJobRequest {
+  // Required ID for the job to get.
+  string job_id = 1;
+}
+
+message GetJobResponse {
+  Job job = 1;
+}
+
+message SubmitJobRequest {
+  // Job to submit. This must have at least one command. If the ID is not
+  // present, one is generated. No other values may be present.
+  Job job = 1;
+}
+
+message SubmitJobResponse {
+  // The submitted job.
+  Job job = 1;
+}
+
+message StopJobRequest {
+  // Required ID for the job to stop.
+  string job_id = 1;
+
+  // If true, issues a SIGKILL. If false, issues a SIGTERM.
+  bool force = 2;
+}
+
+message StopJobResponse {
+  // The completed job. The exit code field is guaranteed to be present.
+  Job job = 1;
+}
+
+message StreamJobOutputRequest {
+  // Required ID for the job to stream output for.
+  string job_id = 1;
+
+  // Limit the output to only the given stream type. By default both stdout and
+  // stderr are present.
+  oneof stream_limit {
+    bool only_stdout = 2;
+    bool only_stderr = 3;
+  }
+
+  // If true, provides output from the beginning of the job before streaming any
+  // new output. If false, only streams new output.
+  bool from_beginning = 4;
+}
+
+message StreamJobOutputResponse {
+  oneof response {
+    // A chunk of stdout data. There are no bounds to the size of this chunk.
+    // When replaying past data, stdout comes before stderr.
+    bytes stdout = 1;
+
+    // A chunk of stderr data. There are no bounds to the size of this chunk.
+    // When replaying past data, stdout comes before stderr.
+    bytes stderr = 2;
+
+    // When the job has completed and all output has been sent, this is sent
+    // as the last message before the stream is closed. This is always sent as
+    // the last message for a completed job, even if output stream is requested
+    // on an already-completed job.
+    int32 completed_exit_code = 3;
+  }
+
+  // If true, the stdout or stderr represent already-stored output. If false,
+  // the stdout or stderr represent new output.
+  bool past = 4;
+}
