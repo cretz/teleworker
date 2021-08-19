@@ -55,7 +55,7 @@ func execDiag(t *testing.T, withoutLimits bool, diagArgs ...string) (*cmd.Diagno
 	// Create a temp dir and remove when done
 	tmpDir, err := os.MkdirTemp("", "exec-test-")
 	if err != nil {
-		return nil, fmt.Errorf("failed making temp dir: %w", err)
+		return nil, fmt.Errorf("making temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 	exe := filepath.Join(tmpDir, "teleworker")
@@ -64,7 +64,7 @@ func execDiag(t *testing.T, withoutLimits bool, diagArgs ...string) (*cmd.Diagno
 	buildCmd.Dir = modDir
 	b, err := buildCmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("failed building static teleworker: %w\nOutput:\n%s", err, b)
+		return nil, fmt.Errorf("building static teleworker: %w\nOutput:\n%s", err, b)
 	}
 	// Prepare args to direct exec our own diag command
 	args := []string{"direct-exec"}
@@ -83,7 +83,7 @@ func execDiag(t *testing.T, withoutLimits bool, diagArgs ...string) (*cmd.Diagno
 	}
 	var diagRes cmd.DiagnosticResult
 	if err := json.Unmarshal(out, &diagRes); err != nil {
-		return nil, fmt.Errorf("failed unmarshaling output: %w\nCombined output:\n%s", err, out)
+		return nil, fmt.Errorf("unmarshaling output: %w\nCombined output:\n%s", err, out)
 	}
 	return &diagRes, nil
 }

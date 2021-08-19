@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -27,7 +26,7 @@ func directExecCmd() *cobra.Command {
 		Use:   "direct-exec -- COMMAND [ARGS...]",
 		Short: "Internal command for applying limits to child executable",
 		Args:  cobra.MinimumNArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			config := worker.Config{}
 			if !withoutLimits {
 				config = worker.StandardConfig
@@ -37,10 +36,11 @@ func directExecCmd() *cobra.Command {
 				opts = append(opts, worker.WithRootFS(root))
 			}
 			if len(args) == 0 {
-				log.Fatal("At least one argument required")
+				return fmt.Errorf("at least one argument required")
 			} else if err := runDirectExec(config, args[0], args[1:], opts...); err != nil {
-				log.Fatal(err)
+				return err
 			}
+			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&withoutLimits, "without-limits", false, "Run without any resource limits")
@@ -52,12 +52,12 @@ func runDirectExec(config worker.Config, command string, args []string, opts ...
 	// Start the worker
 	w, err := worker.New(config)
 	if err != nil {
-		return fmt.Errorf("failed starting worker: %w", err)
+		return fmt.Errorf("starting worker: %w", err)
 	}
 	// Submit the job
 	job, err := w.SubmitJob("", "", command, args, opts...)
 	if err != nil {
-		return fmt.Errorf("failed submitting job: %w", err)
+		return fmt.Errorf("submitting job: %w", err)
 	}
 	// Add update listener w/ just a buffer of 5
 	updateCh := make(chan worker.JobUpdate, 5)
@@ -118,7 +118,11 @@ func drainOutput(j *worker.Job, stderr bool, buf []byte, startOffset int) (nextO
 	var n int
 	nextOffset = startOffset
 	for {
-		n, _, _, err = j.ReadOutput(stderr, buf, nextOffset)
+		if stderr {
+			n, _, _, err = j.ReadStdout(buf, nextOffset)
+		} else {
+			n, _, _, err = j.ReadStderr(buf, nextOffset)
+		}
 		if err != nil {
 			return
 		} else if n == 0 {

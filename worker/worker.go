@@ -12,7 +12,8 @@ import (
 
 // Worker represents a worker that can manage jobs.
 type Worker struct {
-	runner runner
+	runner    runner
+	hasLimits bool
 	// Keyed by namespace, then ID
 	jobs     map[string]map[string]*Job
 	jobsLock sync.RWMutex
@@ -23,6 +24,7 @@ type Worker struct {
 
 // Config is configuration for a worker.
 type Config struct {
+	// If nil, jobs will not have any limits placed.
 	Limits *JobLimitConfig
 }
 
@@ -49,15 +51,15 @@ var StandardConfig = Config{
 // New creates a new worker from the given configuration. Note, any config
 // pointers/references may be mutated internally (e.g. the device io max map).
 func New(config Config) (*Worker, error) {
-	w := &Worker{jobs: map[string]map[string]*Job{}}
+	w := &Worker{hasLimits: config.Limits != nil, jobs: map[string]map[string]*Job{}}
 	// Only use limited runner when resource limits are set
-	if config.Limits == nil {
-		w.runner = newRunner()
-	} else {
+	if w.hasLimits {
 		var err error
 		if w.runner, err = newLimitedRunner(config.Limits); err != nil {
-			return nil, fmt.Errorf("failed creating limited runner: %w", err)
+			return nil, fmt.Errorf("creating limited runner: %w", err)
 		}
+	} else {
+		w.runner = newRunner()
 	}
 	return w, nil
 }
@@ -86,7 +88,8 @@ func (w *Worker) GetJob(namespace, id string) (*Job, error) {
 // SubmitJobOption represents an option for Worker.SubmitJob
 type SubmitJobOption func(*Job)
 
-// WithRootFSis a submit job option to set the root filesystem of a job.
+// WithRootFS is a submit job option to set the root filesystem of a job. This
+// cannot be set on a worker configured without job limits.
 func WithRootFS(root string) SubmitJobOption {
 	return func(j *Job) { j.RootFS = root }
 }
@@ -134,9 +137,12 @@ func (w *Worker) SubmitJob(namespace, id, command string, args []string, opts ..
 	for _, opt := range opts {
 		opt(job)
 	}
+	if !w.hasLimits && job.RootFS != "" {
+		return nil, fmt.Errorf("cannot set root FS on non-limited worker")
+	}
 	// Attempt to start job
 	if err := w.runner.start(job); err != nil {
-		return nil, fmt.Errorf("failed starting job: %w", err)
+		return nil, fmt.Errorf("starting job: %w", err)
 	}
 	// Add to map and return
 	w.jobsLock.Lock()
@@ -147,8 +153,8 @@ func (w *Worker) SubmitJob(namespace, id, command string, args []string, opts ..
 }
 
 // Shutdown stops all jobs via Job.Stop, waits for all jobs to finish or context
-// to close. If context closes before jobs have completed, the context error is
-// returned. Regardless of result, once this is called no other calls can be
+// to close. This returns nil if all jobs have completed, or the context error
+// otherwise. Regardless of result, once this is called no other calls can be
 // used on this worker. This returns ErrShutdown if the worker is already
 // shutdown.
 func (w *Worker) Shutdown(ctx context.Context, force bool) error {
@@ -166,6 +172,10 @@ func (w *Worker) Shutdown(ctx context.Context, force bool) error {
 	jobs := w.jobs
 	w.jobs = nil
 	w.jobsLock.Unlock()
+	// If there are no jobs, eagerly return nil
+	if len(jobs) == 0 {
+		return nil
+	}
 	// Asynchronously stop all jobs, ignoring errors
 	var wg sync.WaitGroup
 	for _, jobsByID := range jobs {
@@ -184,11 +194,18 @@ func (w *Worker) Shutdown(ctx context.Context, force bool) error {
 		defer close(wgDone)
 		wg.Wait()
 	}()
+	// Wait for context done or context close
 	select {
 	case <-ctx.Done():
 	case <-wgDone:
 	}
-	// Return context error just in case context close was what caused all to
-	// finish but the wait group case was chosen
-	return ctx.Err()
+	// Do another non-blocking read to check for done. We do this separately
+	// instead of above just in case context is closed but wait group was marked
+	// done also.
+	select {
+	case <-wgDone:
+		return nil
+	default:
+		return ctx.Err()
+	}
 }

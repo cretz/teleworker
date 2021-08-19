@@ -3,6 +3,7 @@ package worker
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"syscall"
@@ -60,37 +61,35 @@ func (e *execRunner) startCmd(j *Job, cmd *exec.Cmd) error {
 	// Create pipes for stdout and stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("failed creating stdout pipe: %w", err)
+		return fmt.Errorf("creating stdout pipe: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return fmt.Errorf("failed creating stderr pipe: %w", err)
+		return fmt.Errorf("creating stderr pipe: %w", err)
 	}
-	// Start and return failure if failed
+
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	j.PID = cmd.Process.Pid
 	// Start pipes
-	stdoutCh := startPipe(j, false, stdout)
-	stderrCh := startPipe(j, true, stderr)
+	stdoutCh := startPipe(j, false /* stderr */, stdout)
+	stderrCh := startPipe(j, true /* stderr */, stderr)
 	// Asynchronously wait for completion
 	go func() {
+		// Wait for pipes to be complete before waiting for command to be complete.
+		// Per docs if use Wait before waiting on pipes, we can lose data.
+		<-stdoutCh
+		<-stderrCh
+		// Now wait on command completion
 		var exitCode int
-		// Per docs, this completes stdout/stderr IO before returning
 		err := cmd.Wait()
 		if exitErr, _ := err.(*exec.ExitError); exitErr != nil {
 			exitCode = exitErr.ExitCode()
 		} else if err != nil {
-			// TODO(cretz): Handle/log unexpected error?
+			log.Printf("Child execution on job %v:%v failed without exit code: %v", j.Namespace, j.ID, err)
 			exitCode = -1
 		}
-		// Although cmd.Wait() completes output, we want to ensure we're done
-		// writing the job update before marking done
-		stdout.Close()
-		stderr.Close()
-		<-stdoutCh
-		<-stderrCh
 		// Mark done
 		j.markDone(exitCode)
 	}()
@@ -129,7 +128,9 @@ func startPipe(j *Job, stderr bool, r io.Reader) <-chan struct{} {
 			}
 			// If there's an error, we're done
 			if err != nil {
-				// TODO(cretz): Handle/log err != io.EOF?
+				if err != io.EOF {
+					log.Printf("Got non-EOF error on job %v:%v output: %v", j.Namespace, j.ID, err)
+				}
 				return
 			}
 		}

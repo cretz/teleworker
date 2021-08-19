@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"runtime"
@@ -31,14 +30,17 @@ func diagCmd() *cobra.Command {
 		Use:   "diag",
 		Short: "Internal utility to perform diagnostics and dump result",
 		Args:  cobra.NoArgs,
-		Run: func(*cobra.Command, []string) {
-			if d, err := RunDiag(allocMem, writeDisk); err != nil {
-				log.Fatal(err)
-			} else if b, err := json.MarshalIndent(d, "", "  "); err != nil {
-				log.Fatal(err)
-			} else {
-				fmt.Println(string(b))
+		RunE: func(*cobra.Command, []string) error {
+			d, err := RunDiag(allocMem, writeDisk)
+			if err != nil {
+				return err
 			}
+			b, err := json.MarshalIndent(d, "", "  ")
+			if err != nil {
+				return err
+			}
+			fmt.Println(string(b))
+			return nil
 		},
 	}
 	cmd.Flags().IntVar(&allocMem, "alloc-mem", 0, "Amount of bytes to attempt to allocate")
@@ -56,7 +58,7 @@ func RunDiag(allocMem int, writeDisk bool) (*DiagnosticResult, error) {
 	// See if there are any avail interfaces
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return nil, fmt.Errorf("failed getting interfaces: %w", err)
+		return nil, fmt.Errorf("getting interfaces: %w", err)
 	}
 	for _, iface := range ifaces {
 		// Flag not 0 (tunl/sit) or local only (so not up, broadcast, etc), then
@@ -68,7 +70,7 @@ func RunDiag(allocMem int, writeDisk bool) (*DiagnosticResult, error) {
 	}
 	// Cwd
 	if res.Dir, err = os.Getwd(); err != nil {
-		return nil, fmt.Errorf("failed getting current working dir: %w", err)
+		return nil, fmt.Errorf("getting current working dir: %w", err)
 	}
 	// If alloc requested, attempt via byte slice
 	if allocMem > 0 {
@@ -85,20 +87,25 @@ func RunDiag(allocMem int, writeDisk bool) (*DiagnosticResult, error) {
 	if writeDisk {
 		f, err := directio.OpenFile("temp-file", os.O_WRONLY|os.O_CREATE|os.O_SYNC, 0644)
 		if err != nil {
-			return nil, fmt.Errorf("failed opening temp file: %w", err)
+			return nil, fmt.Errorf("opening temp file: %w", err)
 		}
-		defer os.Remove(f.Name())
-		defer f.Close()
 		block := directio.AlignedBlock(directio.BlockSize)
 		start = time.Now()
 		const bytesTotal = 5 * 1024 * 1024
+		// Capture error and return later so we can close on complete
+		err = nil
 		for i := 0; i < bytesTotal; i += len(block) {
-			if _, err := f.Write(block); err != nil {
-				return nil, fmt.Errorf("failed writing temp file: %w", err)
+			if _, err = f.Write(block); err != nil {
+				break
 			}
 		}
+		// Close the file and remove it, ignoring errors
+		f.Close()
+		os.Remove(f.Name())
+		if err != nil {
+			return nil, fmt.Errorf("writing temp file: %w", err)
+		}
 		timeTaken := time.Since(start)
-		// fmt.Printf("WROTE %v in %v (%v seconds)\n", bytesTotal, timeTaken, timeTaken.Seconds())
 		res.DiskBPS = bytesTotal / timeTaken.Seconds()
 	}
 	return res, nil

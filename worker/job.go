@@ -32,12 +32,12 @@ type Job struct {
 	forceStopCtx    context.Context
 	forceStopCancel context.CancelFunc
 
-	// Only fields below are mutated, and all governed by same mutex at the end
+	// This mutex governs all fields below it
+	updateLock sync.RWMutex
 	stdout     []byte
 	stderr     []byte
 	exitCode   *int
 	listeners  map[chan<- JobUpdate]struct{}
-	updateLock sync.RWMutex
 }
 
 // JobUpdate represents a type of update that can be listened to.
@@ -49,7 +49,8 @@ const (
 	JobUpdateExitCode
 )
 
-// Does not populate several values that may be populated by creator
+// newJob creates a new Job. This may not populate some fields that may be
+// populated by the caller.
 func newJob(namespace, id, command string, args ...string) *Job {
 	j := &Job{
 		Namespace: namespace,
@@ -59,23 +60,37 @@ func newJob(namespace, id, command string, args ...string) *Job {
 		CreatedAt: time.Now(),
 		listeners: map[chan<- JobUpdate]struct{}{},
 	}
+	// Since these contexts do not have timers, nothing leaks if they are not
+	// canceled
 	j.doneCtx, j.doneCancel = context.WithCancel(context.Background())
 	j.stopCtx, j.stopCancel = context.WithCancel(context.Background())
 	j.forceStopCtx, j.forceStopCancel = context.WithCancel(context.Background())
 	return j
 }
 
-// Returns error when offset beyond total
-
-// ReadOutput attempts a non-blocking read of the job output into b from the
-// given offset. If stderr is true, this uses stderr data instead of stdout. An
-// error occurs if the offset is beyond the length of the output. The byte slice
-// can be empty/nil to only check total output and exit code.
+// ReadStdout attempts a non-blocking read of the job output into b from the
+// given offset. An error occurs if the offset is beyond the length of the
+// output. The byte slice can be empty/nil to only check total output and exit
+// code.
 //
 // This returns the amount of data read (if any), total known amount of data,
 // and exit code if the job is complete (or nil if not completed). The exit code
 // is the equivalent of calling ExitCode.
-func (j *Job) ReadOutput(stderr bool, b []byte, offset int) (read, total int, exitCode *int, err error) {
+//
+// Note that if exit code is non-nil here or ExitCode returns a non-nil result,
+// the total will never change on successive calls because there is never
+// anymore output given to the job after an exit code is present.
+func (j *Job) ReadStdout(b []byte, offset int) (read, total int, exitCode *int, err error) {
+	return j.readOutput(false, b, offset)
+}
+
+// ReadStderr is the equivalent of ReadStdout but for the stderr output. See
+// ReadStdout for details on parameters and results.
+func (j *Job) ReadStderr(b []byte, offset int) (read, total int, exitCode *int, err error) {
+	return j.readOutput(true, b, offset)
+}
+
+func (j *Job) readOutput(stderr bool, b []byte, offset int) (read, total int, exitCode *int, err error) {
 	j.updateLock.RLock()
 	defer j.updateLock.RUnlock()
 	out := j.stdout
@@ -143,15 +158,17 @@ func (j *Job) Stop(ctx context.Context, force bool) (code int, err error) {
 
 // ExitCode returns a non-nil exit code if the job has completed, or nil if it
 // is still running. The result will be -1 if the job is completed but an exit
-// code could not be determined.
+// code could not be determined. If the result is non-nil, there is never more
+// output added to the job so the total will never change.
 func (j *Job) ExitCode() *int {
 	j.updateLock.RLock()
 	defer j.updateLock.RUnlock()
 	return j.exitCode
 }
 
-// Byte slice not held by this call, can be reused by caller. This should never
-// be called after markDone is called.
+// updateOutput adds output to the job on the given stream. The byte slice is
+// not held by this call and can be reused by caller. This should never be
+// called after markDone is called.
 func (j *Job) updateOutput(stderr bool, output []byte) {
 	j.updateLock.Lock()
 	defer j.updateLock.Unlock()
@@ -162,7 +179,7 @@ func (j *Job) updateOutput(stderr bool, output []byte) {
 		update = JobUpdateStderr
 	} else {
 		j.stdout = append(j.stdout, output...)
-		update = JobUpdateStderr
+		update = JobUpdateStdout
 	}
 	// Notify listeners via non-blocking send
 	for listener := range j.listeners {
@@ -173,6 +190,8 @@ func (j *Job) updateOutput(stderr bool, output []byte) {
 	}
 }
 
+// markDone puts the exit code on the job. updateOutput should never be called
+// after this is called.
 func (j *Job) markDone(exitCode int) {
 	j.updateLock.Lock()
 	defer j.updateLock.Unlock()
