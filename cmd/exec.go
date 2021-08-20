@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -74,9 +75,11 @@ func runDirectExec(config worker.Config, command string, args []string, opts ...
 		// Pipe stdout and stderr
 		if stdoutOffset, err = drainOutput(job, false, buf, stdoutOffset); err != nil {
 			return err
-		} else if stderrOffset, err = drainOutput(job, true, buf, stderrOffset); err != nil {
+		}
+		if stderrOffset, err = drainOutput(job, true, buf, stderrOffset); err != nil {
 			return err
-		} else if exitCode != nil {
+		}
+		if exitCode != nil {
 			// We can exit safely because we drained after an exit code appeared
 			os.Exit(*exitCode)
 			return nil
@@ -87,23 +90,26 @@ func runDirectExec(config worker.Config, command string, args []string, opts ...
 			// We don't care the kind of update, we let any update trigger a re-loop
 			continue
 		case <-sigCh:
-			// Attempt graceful shutdown for a few seconds
-			// TODO(cretz): Print that we received a termination signal and are
-			// attempting graceful shutdown?
+			// Attempt graceful shutdown for a few seconds. We accept that logging
+			// here may taint the output of the child execution.
+			log.Printf("Termination signal received, attempting shutdown")
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			if code, err := job.Stop(ctx, false); err == nil {
+			code, err := job.Stop(ctx, false)
+			if err == nil {
 				os.Exit(code)
 				return nil
 			}
+			log.Printf("Shutdown failed with %v, attempting forced shutdown", err)
 			// Timeout, so we attempt a forced shutdown for a few seconds
 			ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			if code, err := job.Stop(ctx, true); err == nil {
+			if code, err = job.Stop(ctx, true); err == nil {
 				os.Exit(code)
 				return nil
 			}
 			// Timeout again, nothing we can do
+			log.Printf("Forced shutdown failed with %v", err)
 			return fmt.Errorf("failed shutting down job")
 		}
 	}

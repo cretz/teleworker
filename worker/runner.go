@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"os/exec"
 	"syscall"
 )
@@ -95,18 +94,21 @@ func (e *execRunner) startCmd(j *Job, cmd *exec.Cmd) error {
 	}()
 	// Asynchronously listen for stop requests
 	go func() {
-		for {
-			var signal os.Signal
+		stopCh := j.stopCtx.Done()
+		forceStopCh := j.forceStopCtx.Done()
+		// When both channels become nil, we're tried all ways of stopping and
+		// there's no use listening for done anymore
+		for stopCh != nil || forceStopCh != nil {
 			select {
 			case <-j.doneCtx.Done():
 				return
-			case <-j.stopCtx.Done():
-				signal = syscall.SIGTERM
+			case <-stopCh:
+				stopCh = nil
+				cmd.Process.Signal(syscall.SIGTERM)
 			case <-j.forceStopCtx.Done():
-				signal = syscall.SIGKILL
+				forceStopCh = nil
+				cmd.Process.Signal(syscall.SIGKILL)
 			}
-			// TODO(cretz): Handle unexpected error?
-			cmd.Process.Signal(signal)
 		}
 	}()
 	return nil
