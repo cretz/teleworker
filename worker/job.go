@@ -107,7 +107,7 @@ func (j *Job) readOutput(stderr bool, b []byte, offset int) (read, total int, ex
 			read = copy(b, out[offset:])
 		}
 	}
-	return
+	return read, total, exitCode, err
 }
 
 // AddUpdateListener sets the given channel to receive update type on each
