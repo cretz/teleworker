@@ -26,7 +26,7 @@ certificates for the server and client and create server and client auth certifi
     teleworker serve --client-ca-cert client-ca.crt --server-cert server.crt --server-key server.key --without-limits &
 
 Note, `--without-limits` can be removed to use a limited runner if running as root with cgroups and namespace isolation
-capabilities. We use without limits to be simple in this walkthrough. The command the server in the background and
+capabilities. We use without limits to be simple in this walkthrough. The command runs the server in the background and
 prints out something like:
 
     2001/01/01 00:00:00 Serving on 127.0.0.1:33611

@@ -96,7 +96,7 @@ func serveCmd() *cobra.Command {
 				ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
 				defer cancel()
 				if err := w.Shutdown(ctx, true); err != nil {
-					return fmt.Errorf("forced shutdown: %v", err)
+					return fmt.Errorf("forced shutdown: %w", err)
 				}
 				return nil
 			}

@@ -19,6 +19,8 @@ type jobService struct {
 	worker *worker.Worker
 }
 
+// NewJobServiceServer returns an implementation of JobServiceServer backed by
+// the given worker.
 func NewJobServiceServer(w *worker.Worker) JobServiceServer { return &jobService{worker: w} }
 
 func (j *jobService) GetJob(ctx context.Context, req *GetJobRequest) (*GetJobResponse, error) {

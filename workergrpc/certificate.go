@@ -15,6 +15,8 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
+// MTLSServerCredentials returns a set of gRPC credentials for use with gRPC
+// servers.
 func MTLSServerCredentials(clientCACert, serverCert, serverKey []byte) (credentials.TransportCredentials, error) {
 	// Load client CA cert
 	pool := x509.NewCertPool()
@@ -33,6 +35,8 @@ func MTLSServerCredentials(clientCACert, serverCert, serverKey []byte) (credenti
 	}), nil
 }
 
+// MTLSClientCredentials returns a set of gRPC credentials for use with gRPC
+// clients.
 func MTLSClientCredentials(serverCACert, clientCert, clientKey []byte) (credentials.TransportCredentials, error) {
 	// Load server CA cert
 	pool := x509.NewCertPool()
@@ -50,6 +54,7 @@ func MTLSClientCredentials(serverCACert, clientCert, clientKey []byte) (credenti
 	}), nil
 }
 
+// GenerateCertificateConfig is configuration for GenerateCertificate.
 type GenerateCertificateConfig struct {
 	SignerCert []byte
 	SignerKey  []byte
@@ -66,7 +71,8 @@ type GenerateCertificateConfig struct {
 	ServerHost string
 }
 
-// GenerateCertificate ... P-256 ... expires in 365 days
+// GenerateCertificate generates a ECDSA P-256 certificate that is valid for one
+// year.
 func GenerateCertificate(config GenerateCertificateConfig) (certPEM, keyPEM []byte, err error) {
 	// // Create template for P-256 cert
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -75,8 +81,6 @@ func GenerateCertificate(config GenerateCertificateConfig) (certPEM, keyPEM []by
 	}
 	now := time.Now()
 	cert := &x509.Certificate{
-		// IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1)},
-		// Subject:               pkix.Name{CommonName: "127.0.0.1"},
 		NotBefore:             now.Add(-24 * time.Hour),
 		NotAfter:              now.Add(365 * 24 * time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature,
