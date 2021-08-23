@@ -27,9 +27,10 @@ func diagCmd() *cobra.Command {
 	var allocMem int
 	var writeDisk bool
 	cmd := &cobra.Command{
-		Use:   "diag",
-		Short: "Internal utility to perform diagnostics and dump result",
-		Args:  cobra.NoArgs,
+		Use:          "diag",
+		Short:        "Internal utility to perform diagnostics and dump result",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
 		RunE: func(*cobra.Command, []string) error {
 			d, err := RunDiag(allocMem, writeDisk)
 			if err != nil {

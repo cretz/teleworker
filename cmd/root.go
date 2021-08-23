@@ -29,6 +29,16 @@ func rootCmd() *cobra.Command {
 		Use:   "teleworker",
 		Short: "Worker for running jobs",
 	}
-	cmd.AddCommand(childExecCmd(), diagCmd(), directExecCmd())
+	cmd.AddCommand(
+		childExecCmd(),
+		diagCmd(),
+		directExecCmd(),
+		genCertCmd(),
+		getCmd(),
+		serveCmd(),
+		stopCmd(),
+		submitCmd(),
+		tailCmd(),
+	)
 	return cmd
 }

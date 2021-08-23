@@ -315,7 +315,7 @@ type SubmitJobResponse struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	// The submitted job.
+	// The submitted job. Output will never be present.
 	Job *Job `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
 }
 
@@ -420,7 +420,8 @@ type StopJobResponse struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	// The completed job. The exit code field is guaranteed to be present.
+	// The completed job. The exit code field is guaranteed to be present. Output
+	// is not present.
 	Job *Job `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
 }
 
@@ -576,7 +577,13 @@ type StreamJobOutputResponse struct {
 	//	*StreamJobOutputResponse_CompletedExitCode
 	Response isStreamJobOutputResponse_Response `protobuf_oneof:"response"`
 	// If true, the stdout or stderr represent already-stored output. If false,
-	// the stdout or stderr represent new output.
+	// the stdout or stderr represent new output. This will never be true unless
+	// from beginning is set in the request.
+	//
+	// Note, while stdout/stderr for the past (i.e. this value as true) will
+	// always come before any live stdout/stderr (i.e. this value as false), there
+	// is no guarantee that past stdout will come before live stderr or
+	// vice-versa.
 	Past bool `protobuf:"varint,4,opt,name=past,proto3" json:"past,omitempty"`
 }
 
@@ -652,14 +659,14 @@ type isStreamJobOutputResponse_Response interface {
 }
 
 type StreamJobOutputResponse_Stdout struct {
-	// A chunk of stdout data. There are no bounds to the size of this chunk.
-	// When replaying past data, stdout comes before stderr.
+	// A chunk of stdout data. The chunk of data may be any size and a chunk
+	// does not mean it came from the job as that size at that time.
 	Stdout []byte `protobuf:"bytes,1,opt,name=stdout,proto3,oneof"`
 }
 
 type StreamJobOutputResponse_Stderr struct {
-	// A chunk of stderr data. There are no bounds to the size of this chunk.
-	// When replaying past data, stdout comes before stderr.
+	// A chunk of stderr data. The chunk of data may be any size and a chunk
+	// does not mean it came from the job as that size at that time.
 	Stderr []byte `protobuf:"bytes,2,opt,name=stderr,proto3,oneof"`
 }
 

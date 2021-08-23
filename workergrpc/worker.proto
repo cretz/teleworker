@@ -89,7 +89,7 @@ message SubmitJobRequest {
 }
 
 message SubmitJobResponse {
-  // The submitted job.
+  // The submitted job. Output will never be present.
   Job job = 1;
 }
 
@@ -102,7 +102,8 @@ message StopJobRequest {
 }
 
 message StopJobResponse {
-  // The completed job. The exit code field is guaranteed to be present.
+  // The completed job. The exit code field is guaranteed to be present. Output
+  // is not present.
   Job job = 1;
 }
 
@@ -124,12 +125,12 @@ message StreamJobOutputRequest {
 
 message StreamJobOutputResponse {
   oneof response {
-    // A chunk of stdout data. There are no bounds to the size of this chunk.
-    // When replaying past data, stdout comes before stderr.
+    // A chunk of stdout data. The chunk of data may be any size and a chunk
+    // does not mean it came from the job as that size at that time.
     bytes stdout = 1;
 
-    // A chunk of stderr data. There are no bounds to the size of this chunk.
-    // When replaying past data, stdout comes before stderr.
+    // A chunk of stderr data. The chunk of data may be any size and a chunk
+    // does not mean it came from the job as that size at that time.
     bytes stderr = 2;
 
     // When the job has completed and all output has been sent, this is sent
@@ -140,6 +141,12 @@ message StreamJobOutputResponse {
   }
 
   // If true, the stdout or stderr represent already-stored output. If false,
-  // the stdout or stderr represent new output.
+  // the stdout or stderr represent new output. This will never be true unless
+  // from beginning is set in the request.
+  //
+  // Note, while stdout/stderr for the past (i.e. this value as true) will
+  // always come before any live stdout/stderr (i.e. this value as false), there
+  // is no guarantee that past stdout will come before live stderr or
+  // vice-versa.
   bool past = 4;
 }

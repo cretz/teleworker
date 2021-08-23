@@ -24,9 +24,10 @@ func directExecCmd() *cobra.Command {
 	var withoutLimits bool
 	var root string
 	cmd := &cobra.Command{
-		Use:   "direct-exec -- COMMAND [ARGS...]",
-		Short: "Internal command for applying limits to child executable",
-		Args:  cobra.MinimumNArgs(1),
+		Use:          "direct-exec -- COMMAND [ARGS...]",
+		Short:        "Internal command for applying limits to child executable",
+		Args:         cobra.MinimumNArgs(1),
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			config := worker.Config{}
 			if !withoutLimits {
@@ -129,9 +130,7 @@ func drainOutput(j *worker.Job, stderr bool, buf []byte, startOffset int) (nextO
 		} else {
 			n, _, _, err = j.ReadStderr(buf, nextOffset)
 		}
-		if err != nil {
-			return
-		} else if n == 0 {
+		if n == 0 || err != nil {
 			return
 		}
 		// Write it
