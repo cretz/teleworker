@@ -1,0 +1,19 @@
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "hashicorp/bionic64"
+
+  config.vm.synced_folder "../", "/teleworker"
+
+  # We need to install Go, then enable memory swap accounting and restart
+  config.vm.provision "shell", inline: <<-SHELL
+    apt-get update
+    apt-get -y install build-essential
+    curl -fsSL "https://dl.google.com/go/go1.16.7.linux-amd64.tar.gz" | tar Cxz /usr/local
+    echo 'export PATH="$PATH:/usr/local/go/bin"' >> /etc/profile
+
+    sed -rie 's/GRUB_CMDLINE_LINUX="([^"]*)"/GRUB_CMDLINE_LINUX="\\1 cgroup_enable=memory swapaccount=1"/g' /etc/default/grub
+    /usr/sbin/update-grub
+
+    shutdown -r now
+  SHELL
+end
