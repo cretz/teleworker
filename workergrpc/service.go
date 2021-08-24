@@ -117,19 +117,8 @@ func allOutput(fn func(b []byte, offset int) (read, total int, exitCode *int, er
 }
 
 func (j *jobService) SubmitJob(ctx context.Context, req *SubmitJobRequest) (*SubmitJobResponse, error) {
-	// Validate
-	if len(req.Job.Command) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "at least one command value required")
-	} else if req.Job.CreatedAt != nil {
-		return nil, status.Error(codes.InvalidArgument, "created at cannot be present on create")
-	} else if req.Job.Pid != 0 {
-		return nil, status.Error(codes.InvalidArgument, "PID cannot be present on create")
-	} else if len(req.Job.Stdout) != 0 {
-		return nil, status.Error(codes.InvalidArgument, "stdout cannot be present on create")
-	} else if len(req.Job.Stderr) != 0 {
-		return nil, status.Error(codes.InvalidArgument, "stderr cannot be present on create")
-	} else if req.Job.ExitCode != nil {
-		return nil, status.Error(codes.InvalidArgument, "exit code cannot be present on create")
+	if err := validateSubmitJobRequest(req); err != nil {
+		return nil, err
 	}
 	// Submit, convert, and return
 	var submitOpts []worker.SubmitJobOption
@@ -145,11 +134,30 @@ func (j *jobService) SubmitJob(ctx context.Context, req *SubmitJobRequest) (*Sub
 	} else if err != nil {
 		return nil, err
 	}
-	pbJob, err := toProtoJob(job, false, false)
+	pbJob, err := toProtoJob(job, false /* includeStdout */, false /* includeStderr */)
 	if err != nil {
 		return nil, err
 	}
 	return &SubmitJobResponse{Job: pbJob}, nil
+}
+
+func validateSubmitJobRequest(req *SubmitJobRequest) error {
+	// TODO(cretz): If doing properly, we'd send status with details of
+	// google.rpc.BadRequest with each field failure
+	if len(req.Job.Command) == 0 {
+		return status.Error(codes.InvalidArgument, "at least one command value required")
+	} else if req.Job.CreatedAt != nil {
+		return status.Error(codes.InvalidArgument, "created at cannot be present on create")
+	} else if req.Job.Pid != 0 {
+		return status.Error(codes.InvalidArgument, "PID cannot be present on create")
+	} else if len(req.Job.Stdout) != 0 {
+		return status.Error(codes.InvalidArgument, "stdout cannot be present on create")
+	} else if len(req.Job.Stderr) != 0 {
+		return status.Error(codes.InvalidArgument, "stderr cannot be present on create")
+	} else if req.Job.ExitCode != nil {
+		return status.Error(codes.InvalidArgument, "exit code cannot be present on create")
+	}
+	return nil
 }
 
 func (j *jobService) StopJob(ctx context.Context, req *StopJobRequest) (*StopJobResponse, error) {
@@ -172,7 +180,7 @@ func (j *jobService) StopJob(ctx context.Context, req *StopJobRequest) (*StopJob
 		return nil, err
 	}
 	// Convert and return
-	pbJob, err := toProtoJob(job, false, false)
+	pbJob, err := toProtoJob(job, false /* includeStdout */, false /* includeStderr */)
 	if err != nil {
 		return nil, err
 	}
@@ -255,59 +263,78 @@ func (j *jobService) streamOutput(
 	// TODO(cretz): I am intentionally immediately starting live after this
 	// without potentially waiting for the other stream to be done with the past.
 	// We can easily make this ordered if we needed to.
+	const chunkSize = 1024
 	if fromBeginning {
-		b := make([]byte, pastTotal)
-		if _, _, _, err := readFn(b, 0); err != nil {
-			return err
-		}
-		msg := &StreamJobOutputResponse{Past: true}
-		if stderr {
-			msg.Response = &StreamJobOutputResponse_Stderr{Stderr: b}
-		} else {
-			msg.Response = &StreamJobOutputResponse_Stdout{Stdout: b}
-		}
-		// Send
-		select {
-		case <-srv.Context().Done():
-			return srv.Context().Err()
-		case responseCh <- msg:
-		}
-	}
-	// Start a listener with a buffer of 3 to make sure we can backpressure any
-	// single type
-	updateCh := make(chan worker.JobUpdate, 3)
-	job.AddUpdateListener(updateCh)
-	defer job.RemoveUpdateListener(updateCh)
-	// Start from the past total
-	offset := pastTotal
-	buf := make([]byte, 1024)
-	for {
-		n, _, exitCode, err := readFn(buf, offset)
-		if err != nil {
-			return err
-		}
-		offset += n
-		if n > 0 {
-			// Since we are putting this on a channel for later use, we have to copy
-			// the bytes
-			b := make([]byte, n)
-			copy(b, buf)
+		// Read up until the past total, one chunk at a time
+		for offset := 0; offset < pastTotal; {
+			// Only get up to past total, no more
+			amountWanted := chunkSize
+			if pastTotal-offset < amountWanted {
+				amountWanted = pastTotal - offset
+			}
+			b := make([]byte, amountWanted)
+			n, _, _, err := readFn(b, offset)
+			if err != nil {
+				return err
+			}
+			offset += n
+			// Send
 			msg := &StreamJobOutputResponse{Past: true}
 			if stderr {
 				msg.Response = &StreamJobOutputResponse_Stderr{Stderr: b}
 			} else {
 				msg.Response = &StreamJobOutputResponse_Stdout{Stdout: b}
 			}
-			// Send
 			select {
 			case <-srv.Context().Done():
 				return srv.Context().Err()
 			case responseCh <- msg:
 			}
 		}
-		// If there is an exit code, we're done
-		if exitCode != nil {
-			return nil
+	}
+	// Start a listener with a buffer of 2 just to make sure we don't miss an
+	// update at the same time we receive one (extra updates are harmless)
+	updateCh := make(chan worker.JobUpdate, 2)
+	job.AddUpdateListener(updateCh)
+	defer job.RemoveUpdateListener(updateCh)
+	// Start from the past total
+	offset := pastTotal
+	buf := make([]byte, chunkSize)
+	for {
+		// Read until there is none to read (i.e. drain output)
+		for {
+			n, _, exitCode, err := readFn(buf, offset)
+			if err != nil {
+				return err
+			}
+			offset += n
+			// Send output before checking exit code
+			if n > 0 {
+				// Since we are putting this on a channel for later use, we have to copy
+				// the bytes
+				b := make([]byte, n)
+				copy(b, buf)
+				var msg StreamJobOutputResponse
+				if stderr {
+					msg.Response = &StreamJobOutputResponse_Stderr{Stderr: b}
+				} else {
+					msg.Response = &StreamJobOutputResponse_Stdout{Stdout: b}
+				}
+				// Send
+				select {
+				case <-srv.Context().Done():
+					return srv.Context().Err()
+				case responseCh <- &msg:
+				}
+			}
+			// If there is an exit code, we're done
+			if exitCode != nil {
+				return nil
+			}
+			// If there was no output, can exit loop and wait for update
+			if n == 0 {
+				break
+			}
 		}
 		// Wait for any update. In addition to exit code update, we could only wait
 		// for the stdout or stderr we care about, but it is harmless to make extra

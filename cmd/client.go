@@ -79,7 +79,7 @@ func getCmd() *cobra.Command {
 			}
 			defer conn.Close()
 			req.JobId = args[0]
-			resp, err := client.GetJob(context.Background(), &req)
+			resp, err := client.GetJob(cmd.Context(), &req)
 			if err != nil {
 				return fmt.Errorf("getting job: %w", err)
 			}
@@ -121,7 +121,7 @@ func stopCmd() *cobra.Command {
 			// Stop in background
 			errCh := make(chan error, 1)
 			jobCh := make(chan *workergrpc.Job, 1)
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
 			go func() {
 				if resp, err := client.StopJob(ctx, &req); err != nil {
@@ -165,7 +165,7 @@ func submitCmd() *cobra.Command {
 			defer conn.Close()
 			req.Job.Command = args
 			// Submit and dump result
-			resp, err := client.SubmitJob(context.Background(), req)
+			resp, err := client.SubmitJob(cmd.Context(), req)
 			if err != nil {
 				return fmt.Errorf("submitting job: %w", err)
 			}
@@ -207,7 +207,7 @@ func tailCmd() *cobra.Command {
 				req.StreamLimit = &workergrpc.StreamJobOutputRequest_OnlyStdout{OnlyStdout: true}
 			}
 			// Start stream
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
 			stream, err := client.StreamJobOutput(ctx, req)
 			if err != nil {

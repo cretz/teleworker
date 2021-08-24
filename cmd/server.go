@@ -62,7 +62,7 @@ func serveCmd() *cobra.Command {
 			}
 			// Force shutdown for one second ignoring error on abnormal close
 			defer func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+				ctx, cancel := context.WithTimeout(cmd.Context(), 1*time.Second)
 				defer cancel()
 				w.Shutdown(ctx, true)
 			}()
@@ -85,7 +85,7 @@ func serveCmd() *cobra.Command {
 				return fmt.Errorf("serving service: %w", err)
 			case <-sigCh:
 				log.Printf("Termination signal received, attempting shutdown")
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				ctx, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
 				defer cancel()
 				err := w.Shutdown(ctx, false)
 				if err == nil {
@@ -93,7 +93,7 @@ func serveCmd() *cobra.Command {
 				}
 				log.Printf("Shutdown failed with %v, attempting forced shutdown", err)
 				// Timeout, so we attempt a forced shutdown for a few seconds
-				ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+				ctx, cancel = context.WithTimeout(cmd.Context(), 3*time.Second)
 				defer cancel()
 				if err := w.Shutdown(ctx, true); err != nil {
 					return fmt.Errorf("forced shutdown: %w", err)
