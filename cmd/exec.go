@@ -24,9 +24,10 @@ func directExecCmd() *cobra.Command {
 	var withoutLimits bool
 	var root string
 	cmd := &cobra.Command{
-		Use:   "direct-exec -- COMMAND [ARGS...]",
-		Short: "Internal command for applying limits to child executable",
-		Args:  cobra.MinimumNArgs(1),
+		Use:          "direct-exec -- COMMAND [ARGS...]",
+		Short:        "Internal command for applying limits to child executable",
+		Args:         cobra.MinimumNArgs(1),
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			config := worker.Config{}
 			if !withoutLimits {
@@ -38,7 +39,7 @@ func directExecCmd() *cobra.Command {
 			}
 			if len(args) == 0 {
 				return fmt.Errorf("at least one argument required")
-			} else if err := runDirectExec(config, args[0], args[1:], opts...); err != nil {
+			} else if err := runDirectExec(cmd.Context(), config, args[0], args[1:], opts...); err != nil {
 				return err
 			}
 			return nil
@@ -49,7 +50,13 @@ func directExecCmd() *cobra.Command {
 	return cmd
 }
 
-func runDirectExec(config worker.Config, command string, args []string, opts ...worker.SubmitJobOption) error {
+func runDirectExec(
+	ctx context.Context,
+	config worker.Config,
+	command string,
+	args []string,
+	opts ...worker.SubmitJobOption,
+) error {
 	// Start the worker
 	w, err := worker.New(config)
 	if err != nil {
@@ -93,7 +100,7 @@ func runDirectExec(config worker.Config, command string, args []string, opts ...
 			// Attempt graceful shutdown for a few seconds. We accept that logging
 			// here may taint the output of the child execution.
 			log.Printf("Termination signal received, attempting shutdown")
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
 			code, err := job.Stop(ctx, false)
 			if err == nil {
@@ -102,7 +109,7 @@ func runDirectExec(config worker.Config, command string, args []string, opts ...
 			}
 			log.Printf("Shutdown failed with %v, attempting forced shutdown", err)
 			// Timeout, so we attempt a forced shutdown for a few seconds
-			ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+			ctx, cancel = context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
 			if code, err = job.Stop(ctx, true); err == nil {
 				os.Exit(code)
@@ -129,9 +136,7 @@ func drainOutput(j *worker.Job, stderr bool, buf []byte, startOffset int) (nextO
 		} else {
 			n, _, _, err = j.ReadStderr(buf, nextOffset)
 		}
-		if err != nil {
-			return
-		} else if n == 0 {
+		if n == 0 || err != nil {
 			return
 		}
 		// Write it
