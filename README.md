@@ -8,6 +8,10 @@ Teleworker is a library, CLI, and gRPC server for managing the running of execut
 
 Simply run `go build` from the repository root with a recent version of Go.
 
+Note, to build a server binary supporting resource/namespace limits on Linux, the binary needs to be built statically
+(i.e. by passing `-tags osusergo,netgo` to `go build`) and needs to run as root with cgroups and namespacing enabled on
+the system.
+
 ## Walkthrough
 
 This walkthrough assumes Linux using Bash.
@@ -82,7 +86,8 @@ that directory via normal `go test`.
 
 The tests need to run in a Linux environment configured for cgroups and namespace isolation.
 [Vagrant](https://www.vagrantup.com) can be used for this. Simply run `vagrant up` followed by `vagrant ssh` to create
-and start a shell in a VM that can run the tests. Once in there, navigate to `/teleworker/tests` and run `go test`.
+and start a shell in a VM that can run the tests. Once in there, become root and navigate to `/teleworker/tests` and run
+`go test`.
 
 ### Regenerating Protos
 

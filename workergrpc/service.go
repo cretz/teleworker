@@ -20,7 +20,9 @@ type jobService struct {
 }
 
 // NewJobServiceServer returns an implementation of JobServiceServer backed by
-// the given worker.
+// the given worker. Note, no RPC calls will work on this unless the gRPC
+// credentials contain a client certificate (whose OU is used as the job
+// namespace).
 func NewJobServiceServer(w *worker.Worker) JobServiceServer { return &jobService{worker: w} }
 
 func (j *jobService) GetJob(ctx context.Context, req *GetJobRequest) (*GetJobResponse, error) {
@@ -42,7 +44,11 @@ func (j *jobService) getJob(ctx context.Context, id string) (*worker.Job, error)
 	if id == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "job ID required")
 	}
-	job, err := j.worker.GetJob(namespaceFromContext(ctx), id)
+	ns, err := namespaceFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	job, err := j.worker.GetJob(ns, id)
 	if err == worker.ErrShutdown {
 		return nil, status.Error(codes.FailedPrecondition, "worker shutdown")
 	} else if err != nil {
@@ -53,23 +59,20 @@ func (j *jobService) getJob(ctx context.Context, id string) (*worker.Job, error)
 	return job, nil
 }
 
-func namespaceFromContext(ctx context.Context) string {
-	p, ok := peer.FromContext(ctx)
-	// No peer info setup up means use empty namespace
-	if !ok {
-		return ""
+func namespaceFromContext(ctx context.Context) (string, error) {
+	// Must have a peer context and a certificate, then we can use the leaf OU
+	// (even if empty)
+	if p, ok := peer.FromContext(ctx); ok {
+		if tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo); ok {
+			ous := tlsInfo.State.PeerCertificates[0].Subject.OrganizationalUnit
+			if len(ous) == 0 {
+				return "", nil
+			}
+			return ous[0], nil
+		}
 	}
-	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
-	// No TLS cert means it was not setup to require it, so use empty namespace
-	if !ok || len(tlsInfo.State.PeerCertificates) == 0 {
-		return ""
-	}
-	// Use the first OU
-	ous := tlsInfo.State.PeerCertificates[0].Subject.OrganizationalUnit
-	if len(ous) == 0 {
-		return ""
-	}
-	return ous[0]
+	// Certificate required
+	return "", status.Error(codes.Unauthenticated, "missing client certificate")
 }
 
 func toProtoJob(job *worker.Job, includeStdout, includeStderr bool) (*Job, error) {
@@ -120,13 +123,16 @@ func (j *jobService) SubmitJob(ctx context.Context, req *SubmitJobRequest) (*Sub
 	if err := validateSubmitJobRequest(req); err != nil {
 		return nil, err
 	}
+	ns, err := namespaceFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// Submit, convert, and return
 	var submitOpts []worker.SubmitJobOption
 	if req.Job.RootFs != "" {
 		submitOpts = []worker.SubmitJobOption{worker.WithRootFS(req.Job.RootFs)}
 	}
-	job, err := j.worker.SubmitJob(
-		namespaceFromContext(ctx), req.Job.Id, req.Job.Command[0], req.Job.Command[1:], submitOpts...)
+	job, err := j.worker.SubmitJob(ns, req.Job.Id, req.Job.Command[0], req.Job.Command[1:], submitOpts...)
 	if err == worker.ErrShutdown {
 		return nil, status.Error(codes.FailedPrecondition, "worker shutdown")
 	} else if err == worker.ErrIDAlreadyExists {
@@ -144,17 +150,18 @@ func (j *jobService) SubmitJob(ctx context.Context, req *SubmitJobRequest) (*Sub
 func validateSubmitJobRequest(req *SubmitJobRequest) error {
 	// TODO(cretz): If doing properly, we'd send status with details of
 	// google.rpc.BadRequest with each field failure
-	if len(req.Job.Command) == 0 {
+	switch {
+	case len(req.Job.Command) == 0:
 		return status.Error(codes.InvalidArgument, "at least one command value required")
-	} else if req.Job.CreatedAt != nil {
+	case req.Job.CreatedAt != nil:
 		return status.Error(codes.InvalidArgument, "created at cannot be present on create")
-	} else if req.Job.Pid != 0 {
+	case req.Job.Pid != 0:
 		return status.Error(codes.InvalidArgument, "PID cannot be present on create")
-	} else if len(req.Job.Stdout) != 0 {
+	case len(req.Job.Stdout) != 0:
 		return status.Error(codes.InvalidArgument, "stdout cannot be present on create")
-	} else if len(req.Job.Stderr) != 0 {
+	case len(req.Job.Stderr) != 0:
 		return status.Error(codes.InvalidArgument, "stderr cannot be present on create")
-	} else if req.Job.ExitCode != nil {
+	case req.Job.ExitCode != nil:
 		return status.Error(codes.InvalidArgument, "exit code cannot be present on create")
 	}
 	return nil

@@ -68,12 +68,13 @@ func serveCmd() *cobra.Command {
 			}()
 			// Serve in background
 			srv := grpc.NewServer(grpc.Creds(creds))
+			defer srv.Stop()
 			workergrpc.RegisterJobServiceServer(srv, workergrpc.NewJobServiceServer(w))
+			// This listener is closed before srv.Serve returns below
 			l, err := net.Listen("tcp", address)
 			if err != nil {
 				return fmt.Errorf("listening to address: %w", err)
 			}
-			defer srv.Stop()
 			serveErrCh := make(chan error, 1)
 			go func() { serveErrCh <- srv.Serve(l) }()
 			log.Printf("Serving on %v", l.Addr().String())

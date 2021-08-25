@@ -15,6 +15,17 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
+// Force minimum TLS 1.2
+const tlsMinVersion = tls.VersionTLS12
+
+// Force the top-preferred AEAD ECDHE suites from
+// https://github.com/golang/go/blob/go1.17/src/crypto/tls/cipher_suites.go#L272-L275
+var tlsCipherSuites = []uint16{
+	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305, tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+}
+
 // MTLSServerCredentials returns a set of gRPC credentials for use with gRPC
 // servers.
 func MTLSServerCredentials(clientCACert, serverCert, serverKey []byte) (credentials.TransportCredentials, error) {
@@ -32,6 +43,8 @@ func MTLSServerCredentials(clientCACert, serverCert, serverKey []byte) (credenti
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		ClientCAs:    pool,
 		Certificates: []tls.Certificate{cert},
+		MinVersion:   tlsMinVersion,
+		CipherSuites: tlsCipherSuites,
 	}), nil
 }
 
@@ -51,6 +64,8 @@ func MTLSClientCredentials(serverCACert, clientCert, clientKey []byte) (credenti
 	return credentials.NewTLS(&tls.Config{
 		RootCAs:      pool,
 		Certificates: []tls.Certificate{cert},
+		MinVersion:   tlsMinVersion,
+		CipherSuites: tlsCipherSuites,
 	}), nil
 }
 
@@ -61,20 +76,27 @@ type GenerateCertificateConfig struct {
 	OU         string
 	// If true, this key can sign others and is marked as a CA. CA certs are only
 	// used for signing and verification, not directly for server/client auth.
+	// This cannot be true if ServerHost is non-empty.
 	// TODO(cretz): Intentionally not separating signer from CA, but could change
 	// to have non-CA intermediates if needed
 	CA bool
 	// The IP or DNS name used by the server. If this is non-empty, the
 	// certificate will be a server certificate for server auth. If this is empty,
-	// the certificate will be a client certificate for client auth. This field
-	// is ignored if CA is true.
+	// the certificate will be a client certificate for client auth. This must be
+	// empty is CA is true.
 	ServerHost string
 }
 
 // GenerateCertificate generates a ECDSA P-256 certificate that is valid for one
 // year.
 func GenerateCertificate(config GenerateCertificateConfig) (certPEM, keyPEM []byte, err error) {
-	// // Create template for P-256 cert
+	// Validate
+	if config.CA && config.ServerHost != "" {
+		return nil, nil, fmt.Errorf("cannot have server host for CA")
+	} else if (len(config.SignerCert) == 0) != (len(config.SignerKey) == 0) {
+		return nil, nil, fmt.Errorf("only one of signer cert or key present, must have both or neither")
+	}
+	// Create template for P-256 cert
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, err
@@ -114,17 +136,23 @@ func GenerateCertificate(config GenerateCertificateConfig) (certPEM, keyPEM []by
 			return nil, nil, fmt.Errorf("both signer cert and key must be absent or present")
 		}
 		// Load cert
-		if block, _ := pem.Decode(config.SignerCert); block == nil {
+		block, _ := pem.Decode(config.SignerCert)
+		if block == nil {
 			return nil, nil, fmt.Errorf("failed reading cert PEM")
-		} else if parentCert, err = x509.ParseCertificate(block.Bytes); err != nil {
+		}
+		if parentCert, err = x509.ParseCertificate(block.Bytes); err != nil {
 			return nil, nil, fmt.Errorf("parsing cert: %w", err)
 		}
 		// Load private key
-		if block, _ := pem.Decode(config.SignerKey); block == nil {
+		block, _ = pem.Decode(config.SignerKey)
+		if block == nil {
 			return nil, nil, fmt.Errorf("failed reading key PEM")
-		} else if parentPrivIface, err := x509.ParsePKCS8PrivateKey(block.Bytes); err != nil {
+		}
+		parentPrivIface, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
 			return nil, nil, fmt.Errorf("parsing key: %w", err)
-		} else if parentPriv, _ = parentPrivIface.(*ecdsa.PrivateKey); parentPriv == nil {
+		}
+		if parentPriv, _ = parentPrivIface.(*ecdsa.PrivateKey); parentPriv == nil {
 			return nil, nil, fmt.Errorf("unexpected private key type %T", parentPrivIface)
 		}
 	}

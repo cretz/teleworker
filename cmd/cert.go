@@ -18,9 +18,6 @@ func genCertCmd() *cobra.Command {
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if config.CA && config.ServerHost != "" {
-				return fmt.Errorf("cannot have server host for CA")
-			}
 			// Load signer and key
 			if signerCert != "" || signerKey != "" {
 				if signerCert == "" || signerKey == "" {

@@ -6,6 +6,7 @@ package tests
 import (
 	"context"
 	"io"
+	"log"
 	"net"
 	"testing"
 	"time"
@@ -141,7 +142,11 @@ func startServer(t *testing.T) *server {
 	workergrpc.RegisterJobServiceServer(srv, workergrpc.NewJobServiceServer(w))
 	l, err := net.Listen("tcp", "127.0.0.1:")
 	require.NoError(t, err)
-	go srv.Serve(l)
+	go func() {
+		if err := srv.Serve(l); err != nil {
+			log.Printf("Failed running server: %v", err)
+		}
+	}()
 	return &server{
 		Server:       srv,
 		addr:         l.Addr().String(),
@@ -182,7 +187,7 @@ func (c *client) submitAndWait(t *testing.T, ctx context.Context, command ...str
 	for {
 		select {
 		case <-ctx.Done():
-			require.NoError(t, ctx.Err())
+			t.Fatal(ctx.Err())
 		case <-ticker.C:
 			job, err := c.GetJob(ctx, &workergrpc.GetJobRequest{JobId: resp.Job.Id})
 			require.NoError(t, err)
